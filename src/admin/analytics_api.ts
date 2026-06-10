@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { CommonErrorResponse, CommonSuccessfulResponse } from "../model";
 import {
+    AnalyticsQueryUpstreamError,
     AnalyticsQueryValidationError,
     queryUsageOverview,
     queryUsageTrend,
@@ -13,6 +14,28 @@ import {
 } from "../analytics/query";
 
 const rangeSchema = z.enum(["24h", "7d", "30d", "90d"]).optional();
+type AnalyticsErrorStatus = 400 | 401 | 403 | 404 | 429 | 500 | 502 | 504;
+
+const toAnalyticsErrorStatus = (error: unknown): AnalyticsErrorStatus => {
+    if (error instanceof AnalyticsQueryValidationError) {
+        return 400;
+    }
+
+    if (error instanceof AnalyticsQueryUpstreamError) {
+        switch (error.statusCode) {
+            case 401:
+            case 403:
+            case 404:
+            case 429:
+            case 504:
+                return error.statusCode;
+            default:
+                return 502;
+        }
+    }
+
+    return 500;
+};
 
 const toErrorResponse = (
     c: Context<HonoCustomType>,
@@ -20,8 +43,7 @@ const toErrorResponse = (
     fallbackMessage: string
 ) => {
     const message = error instanceof Error ? error.message : fallbackMessage;
-    const status = error instanceof AnalyticsQueryValidationError ? 400 : 500;
-    return c.text(message, status);
+    return c.text(message, toAnalyticsErrorStatus(error));
 };
 
 export class AnalyticsOverviewEndpoint extends OpenAPIRoute {

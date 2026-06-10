@@ -61,7 +61,25 @@ type UsageLogQueryParams = {
 
 export class AnalyticsQueryValidationError extends Error {}
 
+export class AnalyticsQueryUpstreamError extends Error {
+    readonly statusCode: number;
+
+    constructor(message: string, statusCode = 502) {
+        super(message);
+        this.name = "AnalyticsQueryUpstreamError";
+        this.statusCode = statusCode;
+    }
+}
+
+export class AnalyticsQueryTimeoutError extends AnalyticsQueryUpstreamError {
+    constructor(timeoutMs: number) {
+        super(`Analytics query timed out after ${timeoutMs}ms`, 504);
+        this.name = "AnalyticsQueryTimeoutError";
+    }
+}
+
 const USAGE_LOG_PAGE_SIZE = 50;
+const ANALYTICS_QUERY_TIMEOUT_MS = 10_000;
 
 const RANGE_CONFIG: Record<AnalyticsRange, RangeConfig> = {
     "24h": {
@@ -202,12 +220,6 @@ const USAGE_LOG_NUMERIC_COLUMNS = [
     DOUBLE_FIELDS.cacheCost,
 ];
 
-const ALL_PROBED_COLUMNS = [
-    ...LEGACY_BLOB_COLUMNS,
-    ...EXTENDED_LOG_COLUMNS,
-    ...USAGE_LOG_NUMERIC_COLUMNS,
-];
-
 const DATASET_COLUMN_SUPPORT_CACHE_TTL_MS = 60_000;
 const DATASET_COLUMN_SUPPORT_CACHE = new Map<string, {
     expiresAt: number;
@@ -280,6 +292,26 @@ const getRangeConfig = (range?: string): { range: AnalyticsRange; config: RangeC
 
 const getDatasetName = (c: Context<HonoCustomType>): string => {
     return sanitizeDatasetName(c.env.USAGE_ANALYTICS_DATASET);
+};
+
+const isTruthyConfigValue = (value: string | undefined): boolean => {
+    return value === "1" || value?.toLowerCase() === "true";
+};
+
+const isFalseyConfigValue = (value: string | undefined): boolean => {
+    return value === "0" || value?.toLowerCase() === "false";
+};
+
+const isAnalyticsQueryDisabled = (c: Context<HonoCustomType>): boolean => {
+    if (isFalseyConfigValue(c.env.DISABLE_ANALYTICS_QUERIES)) {
+        return false;
+    }
+
+    if (isTruthyConfigValue(c.env.DISABLE_ANALYTICS_QUERIES)) {
+        return true;
+    }
+
+    return Boolean(c.env.FRONTEND_DEV_SERVER_URL);
 };
 
 const formatSqlDateTime = (date: Date): string => {
@@ -420,17 +452,37 @@ const runAnalyticsQueryRaw = async <T extends Record<string, unknown>>(
     }
 
     const api = `https://api.cloudflare.com/client/v4/accounts/${c.env.CF_ACCOUNT_ID}/analytics_engine/sql`;
-    const response = await fetch(api, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${c.env.CF_API_TOKEN}`,
-        },
-        body: query,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ANALYTICS_QUERY_TIMEOUT_MS);
+    let response: Response;
+
+    try {
+        response = await fetch(api, {
+            method: "POST",
+            headers: {
+                Accept: "application/json",
+                Authorization: `Bearer ${c.env.CF_API_TOKEN}`,
+                "Content-Type": "text/plain;charset=UTF-8",
+            },
+            body: query,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+            throw new AnalyticsQueryTimeoutError(ANALYTICS_QUERY_TIMEOUT_MS);
+        }
+
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+    }
 
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(errorText || `Analytics query failed with ${response.status}`);
+        throw new AnalyticsQueryUpstreamError(
+            errorText || `Analytics query failed with ${response.status}`,
+            response.status >= 500 ? 502 : response.status
+        );
     }
 
     const json = await response.json() as {
@@ -453,31 +505,6 @@ const runAnalyticsQuery = async <T extends Record<string, unknown>>(
     return result.data;
 };
 
-const probeColumnAvailability = async (
-    c: Context<HonoCustomType>,
-    dataset: string,
-    columnName: string,
-    whereClause?: string
-): Promise<boolean> => {
-    try {
-        await runAnalyticsQuery<Record<string, unknown>>(c, `
-SELECT
-    ${columnName}
-FROM ${dataset}
-${whereClause ? `WHERE ${whereClause}` : ""}
-LIMIT 1
-        `.trim());
-        return true;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.includes("unable to find type of column")) {
-            return false;
-        }
-
-        throw error;
-    }
-};
-
 const getDatasetColumnSupport = async (
     c: Context<HonoCustomType>,
     dataset: string,
@@ -491,17 +518,23 @@ const getDatasetColumnSupport = async (
 
     const pending = (async () => {
         const availableColumns = new Set<string>();
-        const results = await Promise.all(
-            ALL_PROBED_COLUMNS.map(async (columnName) => ({
-                columnName,
-                supported: await probeColumnAvailability(c, dataset, columnName, whereClause),
-            }))
-        );
 
-        results.forEach((result) => {
-            if (result.supported) {
-                availableColumns.add(result.columnName);
+        const result = await runAnalyticsQueryRaw<Record<string, unknown>>(c, `
+SELECT
+    *
+FROM ${dataset}
+${whereClause ? `WHERE ${whereClause}` : ""}
+LIMIT 1
+        `.trim());
+
+        result.meta?.forEach((column) => {
+            if (column.name) {
+                availableColumns.add(column.name);
             }
+        });
+
+        result.data.forEach((row) => {
+            Object.keys(row).forEach((columnName) => availableColumns.add(columnName));
         });
 
         return { availableColumns };
@@ -626,11 +659,66 @@ const buildUsageLogEmptyResponse = (
     items: [],
 });
 
+const buildEmptyOverviewResponse = (range: AnalyticsRange) => ({
+    range,
+    totals: {
+        requests: 0,
+        successes: 0,
+        failures: 0,
+        successRate: 0,
+        totalCost: 0,
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        avgLatencyMs: 0,
+    },
+});
+
+const buildEmptyTrendResponse = (
+    range: AnalyticsRange,
+    config: RangeConfig
+) => {
+    const trendWindow = buildTrendWindow(range, config);
+
+    return {
+        range,
+        bucket: config.bucketLabel,
+        points: trendWindow.bucketTimestamps.map((bucketTimestamp) => ({
+            timestamp: new Date(bucketTimestamp * 1000).toISOString(),
+            requests: 0,
+            successes: 0,
+            failures: 0,
+            successRate: 0,
+            totalCost: 0,
+        })),
+    };
+};
+
+const buildEmptyBreakdownResponse = (
+    range: AnalyticsRange,
+    dimension: AnalyticsBreakdownDimension
+) => ({
+    range,
+    dimension,
+    items: [],
+});
+
+const buildEmptyEventsResponse = (range: AnalyticsRange) => ({
+    range,
+    sampled: true,
+    compatibilityWarning: undefined,
+    items: [],
+});
+
 export const queryUsageOverview = async (
     c: Context<HonoCustomType>,
     requestedRange?: string
 ) => {
     const { range, config } = getRangeConfig(requestedRange);
+    if (isAnalyticsQueryDisabled(c)) {
+        return buildEmptyOverviewResponse(range);
+    }
+
     const dataset = getDatasetName(c);
     const columnSupport = await getDatasetColumnSupport(c, dataset, buildRangeWhereClause(config));
     const normalizedTotalCostExpression = buildNormalizedCostExpression(columnSupport, DOUBLE_FIELDS.totalCost);
@@ -672,6 +760,10 @@ export const queryUsageTrend = async (
     requestedRange?: string
 ) => {
     const { range, config } = getRangeConfig(requestedRange);
+    if (isAnalyticsQueryDisabled(c)) {
+        return buildEmptyTrendResponse(range, config);
+    }
+
     const dataset = getDatasetName(c);
     const trendWindow = buildTrendWindow(range, config);
     const columnSupport = await getDatasetColumnSupport(c, dataset, trendWindow.whereClause);
@@ -722,6 +814,10 @@ export const queryUsageBreakdown = async (
     const dimension = (requestedDimension && requestedDimension in BREAKDOWN_FIELDS
         ? requestedDimension
         : "token") as AnalyticsBreakdownDimension;
+    if (isAnalyticsQueryDisabled(c)) {
+        return buildEmptyBreakdownResponse(range, dimension);
+    }
+
     const dataset = getDatasetName(c);
     const dimensionField = BREAKDOWN_FIELDS[dimension];
     const columnSupport = await getDatasetColumnSupport(c, dataset, buildRangeWhereClause(config));
@@ -773,6 +869,10 @@ export const queryUsageEvents = async (
     requestedLimit?: string
 ) => {
     const { range, config } = getRangeConfig(requestedRange);
+    if (isAnalyticsQueryDisabled(c)) {
+        return buildEmptyEventsResponse(range);
+    }
+
     const dataset = getDatasetName(c);
     const lang = c.get('lang') || 'zh-CN';
     const limit = Math.min(Math.max(Number(requestedLimit || 40) || 40, 1), 100);
@@ -878,7 +978,6 @@ export const queryUsageLogRecords = async (
     c: Context<HonoCustomType>,
     params: UsageLogQueryParams
 ) => {
-    const dataset = getDatasetName(c);
     const lang = c.get('lang') || 'zh-CN';
     const timeWindow = buildCustomTimeWindow(params.start, params.end, lang);
     const requestedPage = Math.min(Math.max(Number(params.page || 1) || 1, 1), 1000);
@@ -887,6 +986,17 @@ export const queryUsageLogRecords = async (
         : "token") as UsageLogFilterDimension;
     const keyword = params.keyword?.trim();
     const result = params.result === "success" || params.result === "failure" ? params.result : "all";
+    if (isAnalyticsQueryDisabled(c)) {
+        return buildUsageLogEmptyResponse(
+            timeWindow,
+            dimension,
+            keyword || "",
+            result,
+            undefined
+        );
+    }
+
+    const dataset = getDatasetName(c);
     const baseCountRows = await runAnalyticsQuery<Record<string, unknown>>(c, `
 SELECT
     count() AS total

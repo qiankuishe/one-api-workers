@@ -22,6 +22,7 @@ type CloudflareBindings = {
     FRONTEND_DEV_SERVER_URL?: string;
     USAGE_ANALYTICS?: AnalyticsEngineDataset;
     USAGE_ANALYTICS_DATASET?: string;
+    DISABLE_ANALYTICS_QUERIES?: string;
 }
 
 type HonoCustomType = {
