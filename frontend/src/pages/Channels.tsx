@@ -38,6 +38,7 @@ import i18n from "@/i18n";
 
 type EditMode = "form" | "json";
 type ModelEditorMode = "visual" | "json";
+type ChannelStatusFilter = "all" | "enabled" | "disabled";
 type JsonObject = Record<string, unknown>;
 type ModelRow = { id: string; name: string; enabled: boolean; default_params?: JsonObject };
 type FetchedModelCandidate = { id: string; label: string };
@@ -577,7 +578,7 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
   const [modelRows, setModelRows] = useState<ModelRow[]>([createEmptyModelRow()]);
   const [modelJsonValue, setModelJsonValue] = useState("[]");
   const [searchQuery, setSearchQuery] = useState("");
-  const [showEnabledOnly, setShowEnabledOnly] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<ChannelStatusFilter>("enabled");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [isFetchedModelsDialogOpen, setIsFetchedModelsDialogOpen] = useState(false);
   const [fetchedModelCandidates, setFetchedModelCandidates] = useState<FetchedModelCandidate[]>([]);
@@ -594,6 +595,11 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
   const modelEditorModeOptions = [
     { value: "visual" as const, label: t("common.visual") },
     { value: "json" as const, label: t("common.json") },
+  ];
+  const statusFilterOptions = [
+    { value: "all" as const, label: t("channels.filterAll") },
+    { value: "enabled" as const, label: t("channels.filterEnabled") },
+    { value: "disabled" as const, label: t("channels.filterDisabled") },
   ];
 
   const applyModels = (models: ChannelModelMapping[]) => {
@@ -1092,7 +1098,11 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
     const rawConfig = parseChannelValue(channel);
     const config = normalizeChannelFormConfig(rawConfig);
 
-    if (showEnabledOnly && config.enabled === false) {
+    const isEnabled = config.enabled !== false;
+    if (statusFilter === "enabled" && !isEnabled) {
+      return false;
+    }
+    if (statusFilter === "disabled" && isEnabled) {
       return false;
     }
 
@@ -1157,17 +1167,16 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
                 className="pl-9"
               />
             </div>
-            <Button
-              type="button"
-              variant={showEnabledOnly ? "secondary" : "outline"}
-              size="sm"
-              aria-pressed={showEnabledOnly}
-              onClick={() => setShowEnabledOnly((current) => !current)}
-              className="w-full sm:w-auto"
-            >
-              <Check className={cn("h-4 w-4", !showEnabledOnly && "opacity-0")} />
-              {t("channels.enabledOnly")}
-            </Button>
+            <ButtonGroup
+              aria-label={t("channels.statusFilter")}
+              value={statusFilter}
+              options={statusFilterOptions}
+              onValueChange={setStatusFilter}
+              activeVariant="secondary"
+              inactiveVariant="outline"
+              className="grid w-full grid-cols-3 sm:inline-flex sm:w-auto"
+              buttonClassName="h-9 rounded-sm px-3"
+            />
           </div>
         )}
 
