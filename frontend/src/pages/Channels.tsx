@@ -1105,6 +1105,29 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
   });
   const endpointPreview = getChannelEndpointPreview(formData.type, formData.endpoint);
   const endpointPlaceholder = getChannelEndpointPlaceholder(formData.type);
+  const renderModelSummaryBadge = (modelSummary: string, modelTooltipText: string, className: string) => {
+    const badge = (
+      <span
+        className={cn(className, modelTooltipText && "cursor-help")}
+        tabIndex={modelTooltipText ? 0 : undefined}
+      >
+        {modelSummary}
+      </span>
+    );
+
+    if (!modelTooltipText) {
+      return badge;
+    }
+
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{badge}</TooltipTrigger>
+        <TooltipContent className="max-w-sm whitespace-normal break-words leading-relaxed">
+          {modelTooltipText}
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
 
   if (view === "list") {
     return (
@@ -1172,17 +1195,23 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
             </CardContent>
           </Card>
         ) : (
-          <Card>
+          <TooltipProvider delayDuration={120}>
+            <Card>
             <div className="divide-y">
               {filteredData?.map((channel) => {
                 const rawConfig = parseChannelValue(channel);
                 const config = normalizeChannelFormConfig(rawConfig);
-                const modelCount = (config.models || []).length;
-                const enabledModelCount = (config.models || []).filter((model) => model.enabled !== false).length;
+                const models = config.models || [];
+                const modelCount = models.length;
+                const enabledModelCount = models.filter((model) => model.enabled !== false).length;
                 const modelSummary =
                   enabledModelCount === modelCount
                     ? t("channels.modelCount", { count: modelCount })
                     : t("channels.modelCountPartial", { enabled: enabledModelCount, total: modelCount });
+                const modelTooltipText = models
+                  .map((model) => (model.name || model.id || "").trim())
+                  .filter(Boolean)
+                  .join(", ");
                 const isMenuOpen = openMenu === channel.key;
                 const isEnabled = config.enabled !== false;
                 const isToggling =
@@ -1232,9 +1261,11 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
                         <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground text-xs">
                           {getTypeLabel(config.type)}
                         </span>
-                        <span className="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-500 text-xs">
-                          {modelSummary}
-                        </span>
+                        {renderModelSummaryBadge(
+                          modelSummary,
+                          modelTooltipText,
+                          "px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-500 text-xs",
+                        )}
                         <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-600 text-xs">
                           {config.weight ?? 0}
                         </span>
@@ -1276,9 +1307,11 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
                         {config.endpoint.replace(/^https?:\/\//, "").split("/")[0]}
                       </div>
                       <div className="text-xs text-center flex-shrink-0">
-                        <span className="text-indigo-500 bg-indigo-500/10 px-3 h-6 rounded-full flex items-center justify-center">
-                          {modelSummary}
-                        </span>
+                        {renderModelSummaryBadge(
+                          modelSummary,
+                          modelTooltipText,
+                          "text-indigo-500 bg-indigo-500/10 px-3 h-6 rounded-full flex items-center justify-center",
+                        )}
                       </div>
                       <div className="text-xs text-center flex-shrink-0">
                         <span className="text-amber-600 bg-amber-500/10 w-6 h-6 rounded-full flex items-center justify-center">
@@ -1310,11 +1343,12 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
                   </div>
                 );
               })}
-              {filteredData?.length === 0 && searchQuery && (
+              {filteredData?.length === 0 && (
                 <div className="p-8 text-center text-muted-foreground">{t("channels.noMatchingChannels")}</div>
               )}
             </div>
-          </Card>
+            </Card>
+          </TooltipProvider>
         )}
       </PageContainer>
     );
