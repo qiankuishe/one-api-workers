@@ -116,6 +116,7 @@
     "title": "Channels",
     "description": "Configure AI provider endpoints, manage models and load balancing",
     "searchPlaceholder": "Search channels...",
+    "enabledOnly": "Enabled only",
     "addChannel": "Add Channel",
     "editChannel": "Edit Channel",
     "emptyTitle": "Add your first channel",

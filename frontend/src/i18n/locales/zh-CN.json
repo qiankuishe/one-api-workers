@@ -116,6 +116,7 @@
     "title": "渠道管理",
     "description": "配置 AI 服务商接口，管理模型和负载均衡策略",
     "searchPlaceholder": "搜索渠道...",
+    "enabledOnly": "仅已启用",
     "addChannel": "添加渠道",
     "editChannel": "编辑渠道",
     "emptyTitle": "添加您的第一个渠道",

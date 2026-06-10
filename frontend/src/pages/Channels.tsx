@@ -577,6 +577,7 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
   const [modelRows, setModelRows] = useState<ModelRow[]>([createEmptyModelRow()]);
   const [modelJsonValue, setModelJsonValue] = useState("[]");
   const [searchQuery, setSearchQuery] = useState("");
+  const [showEnabledOnly, setShowEnabledOnly] = useState(true);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [isFetchedModelsDialogOpen, setIsFetchedModelsDialogOpen] = useState(false);
   const [fetchedModelCandidates, setFetchedModelCandidates] = useState<FetchedModelCandidate[]>([]);
@@ -1086,13 +1087,20 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
     return channelTypes.find((item) => item.value === type)?.label || type;
   };
 
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const filteredData = data?.filter((channel) => {
-    if (!searchQuery) return true;
     const rawConfig = parseChannelValue(channel);
     const config = normalizeChannelFormConfig(rawConfig);
+
+    if (showEnabledOnly && config.enabled === false) {
+      return false;
+    }
+
+    if (!normalizedSearchQuery) return true;
+
     return (
-      config.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      channel.key.toLowerCase().includes(searchQuery.toLowerCase())
+      config.name?.toLowerCase().includes(normalizedSearchQuery) ||
+      channel.key.toLowerCase().includes(normalizedSearchQuery)
     );
   });
   const endpointPreview = getChannelEndpointPreview(formData.type, formData.endpoint);
@@ -1116,8 +1124,8 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
         }
       >
         {data && data.length > 0 && (
-          <div className="mb-4">
-            <div className="relative max-w-sm">
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative w-full max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder={t("channels.searchPlaceholder")}
@@ -1126,6 +1134,17 @@ export function Channels({ createMode = false, editRoute = false }: { createMode
                 className="pl-9"
               />
             </div>
+            <Button
+              type="button"
+              variant={showEnabledOnly ? "secondary" : "outline"}
+              size="sm"
+              aria-pressed={showEnabledOnly}
+              onClick={() => setShowEnabledOnly((current) => !current)}
+              className="w-full sm:w-auto"
+            >
+              <Check className={cn("h-4 w-4", !showEnabledOnly && "opacity-0")} />
+              {t("channels.enabledOnly")}
+            </Button>
           </div>
         )}
 
